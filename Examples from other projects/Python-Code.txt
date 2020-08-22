@@ -1,0 +1,609 @@
+### Program calculates sentiment score using Lexicons using FM Formula ###
+### ------------------------------------------------------------------ ###
+
+from __future__ import division
+import pyodbc
+import sys,inflect
+import re,xlrd
+from collections import OrderedDict
+from nltk.corpus import wordnet as wn
+from nltk.tokenize import word_tokenize
+from nltk.stem.porter import *
+
+inflect_engine = inflect.engine()
+tweets_tokens = []     # tokens of all tweets
+tweet_tok = []         # tokens of single tweet
+
+sqlcon = pyodbc.connect('DRIVER={SQL Server};SERVER=FAZALMASOOD-PC;DATABASE=SQLTweets2nd;UID=sa;PWD=fmkundi')
+cursor = sqlcon.cursor()
+
+### Loading English Dictionary ###
+### -------------------------- ###
+word_list = []
+#dict = open("e:\\FMData\\DataSets\\Combined_Dict.txt","r")
+dict = open("e:\\FMData\\Research-Paper-Twitter\\Lexicon\\british\\brit-a-z.txt","r")
+dwords = dict.read().lower()
+w_tok = dwords.split()
+for w in w_tok:
+    word_list.append(w)
+
+### Reading Positive/Negative emoticons ###
+### ----------------------------------- ###
+print "*** Reading Emoticons ***"
+pos_emot = []
+neg_emot = []
+posemot = open("e:\\FMData\\Research-Paper-Twitter\\Lexicon\\pos-Emoticons.txt","r")
+negemot = open("e:\\FMData\\Research-Paper-Twitter\\Lexicon\\neg-Emoticons.txt","r")
+
+pos = posemot.read().lower()
+neg = negemot.read().lower()
+posemot.close()
+negemot.close()
+pos_tok = pos.split()
+neg_tok = neg.split()
+
+for pe in pos_tok:
+    pos_emot.append(pe)
+for ne in neg_tok:
+    neg_emot.append(ne)
+
+### Hu and Liu Lexicons ###
+### ------------------- ###
+print "*** Reading Lexicons ***"
+hu_pos_words = []
+hu_neg_words = []
+hu_lexicon_pos = open("e:\\FMData\\Research-Paper-Twitter\\Lexicon\\opinion-lexicon-English\\pos-words.txt","r")
+hu_lexicon_neg = open("e:\\FMData\\Research-Paper-Twitter\\Lexicon\\opinion-lexicon-English\\neg-words.txt","r")
+
+hu_pos = hu_lexicon_pos.read().lower()
+hu_neg = hu_lexicon_neg.read().lower()
+hu_lexicon_pos.close()
+hu_lexicon_neg.close()
+hu_pos_tok = hu_pos.split()
+hu_neg_tok = hu_neg.split()
+
+for pw in hu_pos_tok:
+    hu_pos_words.append(pw)
+for nw in hu_neg_tok:
+    hu_neg_words.append(nw)
+
+
+### Dadvar Lexicon ###
+### -------------- ###
+d_pos_words = []
+d_neg_words = []
+
+d_lexicon_pos = open("e:\\FMData\\Research-Paper-Twitter\\Lexicon\\Dadvar\\positive-words.txt","r")
+d_lexicon_neg = open("e:\\FMData\\Research-Paper-Twitter\\Lexicon\\Dadvar\\negative-words.txt","r")
+
+d_pos = d_lexicon_pos.read().lower()
+d_neg = d_lexicon_neg.read().lower()
+d_lexicon_pos.close()
+d_lexicon_neg.close()
+
+d_pos_tok = d_pos.split()
+d_neg_tok = d_neg.split()
+
+for pword in d_pos_tok:
+    d_pos_words.append(pword)
+for nword in d_neg_tok:
+    d_neg_words.append(nword)
+
+### Reading Slang Score from Excel Sheet/Creating dictionary ###
+### -------------------------------------------------------- ###
+swbook = xlrd.open_workbook("e:\\FMData\\Research-Paper-Twitter\\TestNewSet\\Tweets.xlsx")
+swsheet = swbook.sheet_by_name('Slangs_Score')
+snum_rows = swsheet.nrows
+print "Number of rows(Slangs):",snum_rows
+slangs_dic = {}
+for sn in range(1,snum_rows):
+    st  = swsheet.cell_value(sn,0).strip().lower()
+    sc  = swsheet.cell_value(sn,1)
+    slangs_dic[st]=sc
+    
+### Reading tweets ###
+### -------------- ###
+print "*** Reading Tweets from  Excel Sheet  ***"
+#wbook = xlrd.open_workbook("e:\\FMData\\Research-Paper-Twitter\\TestNewSet\\Tweets.xlsx")
+#wsheet = wbook.sheet_by_name('Processed')
+#num_rows = wsheet.nrows
+#print "Number of rows(Tweets):",num_rows
+#########################################################
+wbook = xlrd.open_workbook("e:\\FMData\\Research-Paper-Spell-Corrector\\Sentences1000.xlsx")
+wsheet = wbook.sheet_by_name('Sentences')
+num_rows = wsheet.nrows
+print "Number of rows(Tweets):",num_rows
+
+#########################################################
+
+### Creating Dictionary of Human polarity for performance measure ###
+pol_dict = {}
+for tsn in range(1,num_rows):
+    snum  = wsheet.cell_value(tsn,1)
+    tpol  = wsheet.cell_value(tsn,3)
+    pol_dict[snum] = tpol.lower().strip()
+
+###
+pos1 = 0
+neg1 = 0
+pos2 = 0
+neg2 = 0
+
+### Negation/Intensifiers ###
+### --------------------- ###
+Negations = [ "no","not","rather","hardly","could-not","was-not","did-not",
+              "would-not","should-not","were-not","do-not","does-not","have-not",
+              "has-not","wont","had-not","cant","none","isnt","arent" ]
+
+modifiers    = [ "very","highly","totally","fully" ]      ## average weight : 0.81
+contcshifter = [ "but","accept","although","while" ]      ## average weight : 0.80
+
+### Counting emoticons ###
+### ------------------ ###
+def emot_count(ttweet):
+    emot = 0
+    for emt in ttweet:
+        emt = emt.lower()
+        if(emt in pos_emot or emt in neg_emot):
+            emot = emot + 1
+    return(emot)
+
+### Getting slang's score ###
+### --- ----------------- ###
+def slang_score(slang):
+    return(slangs_dic[slang])
+
+### Remove Punctuations from Word ###
+### ----------------------------- ###
+def rempunct(word):
+    punct = [".",",",";","?"]
+    np = 0
+    for p in punct:
+        nop = word.count(p)
+        if(nop >0 ):
+            np = nop
+    if(np>0):
+        word = word[:-np]
+    else:
+        word = word
+    return(word)
+
+### Couting Exclamation Signs ###
+### ------------------------- ###
+def exclam(tokens):
+    excount = 0
+    for tok in tokens:
+        if (tok.find('!')>=0):
+            excount = excount + 1
+    return(excount)
+
+### Dectecting and counting uppercase words ###
+### --------------------------------------- ###
+def ucword(word):
+    word = rempunct(word)
+    if(word.isupper()and (word.lower() not in pos_emot and word.lower() not in neg_emot)):
+        return(1)
+    else:
+        return(0)
+
+### ------------------------- ###
+def ucword_count(tweet_toks):
+    ucwcount = 0
+    for word in tweet_toks:
+        word = rempunct(word)
+        if(word.isupper()and (word.lower() not in pos_emot and word.lower() not in neg_emot)):
+            ucwcount = ucwcount + 1
+    return(ucwcount)
+
+### Generating word's antonyms ###
+### -------------------------- ###
+def word_antonym(word):
+    unique_antonym = []
+    syn_list = wn.synsets(word)
+    for sl in syn_list:
+        lema = sl.lemmas
+        anto_lema = lema[0].antonyms()
+        if(len(anto_lema)>0):
+            antonym = lema[0].antonyms()[0].name
+            if(antonym not in unique_antonym):
+                unique_antonym.append(antonym)
+    return(unique_antonym)
+
+### Checking word's antonyms ###
+### ------------------------ ###
+def check_antonym(word):
+    pos = neg = 0
+    s_word = word_stem(word)
+    antonm_list1 = word_antonym(word)
+    antonm_list2 = word_antonym(s_word)
+    for anto in antonm_list1:
+            if(anto in hu_pos_words or anto in d_pos_words):
+                neg = neg + 1
+            elif(anto in hu_neg_words or anto in d_neg_words):
+                pos = pos + 1
+
+    for anto in antonm_list2:
+            if(anto in hu_pos_words or anto in d_pos_words):
+                neg = neg + 1
+            elif(anto in hu_neg_words or anto in d_neg_words):
+                pos = pos + 1
+    if(pos > neg):
+        pos = 1
+        neg = 0
+    elif(neg > pos):
+        pos = 0
+        neg = 1
+    return(pos,neg)
+
+### Checking score of synonyms in SentiWordNet ###
+### ------------------------------------------ ###
+def check_synin_swnet(slist1,slist2):
+    pscore = 99
+    nscore = 99
+    sentw_query = "select ps,ns from sentiwnet_score_avg where synsetterms ='%s'"
+    for syn in slist1:
+        query = sentw_query % (syn)
+        cursor.execute(query)
+        scores = cursor.fetchall()
+        if(scores):
+            for score in scores:
+                pscore = score.ps
+                nscore = score.ns 
+                return(pscore,nscore)
+            
+    for syn in slist2:
+        query = sentw_query % (syn)
+        cursor.execute(query)
+        scores = cursor.fetchall()
+        if(scores):
+            for score in scores:
+                pscore = score.ps
+                nscore = score.ns
+                return(pscore,nscore)
+    return(pscore,nscore)
+    
+### Generating word's synonyms using ###
+### -------------------------------- ###
+def lemmalist(str):
+    syn_set = []
+    for synset in wn.synsets(str):
+        for item in synset.lemma_names:
+            syn_set.append(item)
+    syn_list = list(OrderedDict.fromkeys(syn_set)) ## Removing duplicates
+    return syn_list
+
+### Checking word's synonyms ###
+### ------------------------ ###
+def check_synonym(word,swn):
+    # swn for SentiWordNet
+    pos = neg = 0 
+    s_word = word_stem(word)
+    syn_list1 = lemmalist(word)
+    syn_list2 = lemmalist(s_word)
+    if(swn == 1):
+        ps,ns = check_synin_swnet(syn_list1,syn_list2)
+        return(ps,ns)
+    else:
+        for syn1 in syn_list1:
+            if(syn1 in hu_pos_words or syn1 in d_pos_words):
+                pos = pos + 1
+            elif(syn1 in hu_neg_words or syn1 in d_neg_words):
+                neg = neg + 1
+        for syn1 in syn_list2:
+            if(syn1 in hu_pos_words or syn1 in d_pos_words):
+                pos = pos + 1
+            elif(syn1 in hu_neg_words or syn1 in d_neg_words):
+                neg = neg + 1
+
+        if(pos > neg):
+            pos = 1
+            neg = 0
+        elif(neg > pos):
+            pos = 0
+            neg = 1
+        return(pos,neg)
+
+### Word's stemming ###
+### ----------------###
+def word_stem(word):
+    n_word = word      ## normal word (word in its original case form)
+    word = word.lower()
+    s = PorterStemmer()
+    return(s.stem(word))
+
+### Converting plural into singular ###
+### ------------------------------- ###
+def singular_form(word):
+    sform = inflect_engine.singular_noun(word)
+    if(sform):
+        return(sform)
+    else:
+        return(word)
+    
+### Correcting word of repeated letters ###
+### ----------------------------------- ###
+def word_repletters(word):
+    pattern = re.compile(r"(.)\1{1,}", re.IGNORECASE)
+    w1 = pattern.sub(r"\1\1", word)
+    w2 = pattern.sub(r"\1", word)
+    if(w1.lower() in word_list):
+        return(w1,2)
+    elif(w2.lower() in word_list):
+        return(w2,1)
+    else:
+        return("invalid",0)
+
+
+### Counting number of repeated letters in the word ###
+### ----------------------------------------------- ###
+def rep_letters(word):
+    alpha = "abcdefghijklmnopqrstuvwxyz"
+    n_word = word      ## normal word (word in its original case form)
+    word = word.lower()
+    alpha_list = list(alpha)
+    char_list  = list(word)
+    max_count  = 0
+    char_count = 0
+    for char in alpha_list:
+        if(char in char_list):
+            char_count = char_list.count(char)
+        if(char_count > max_count):
+            max_count = char_count
+    return(max_count)
+
+### Scoring word of repeated letters ###
+### -------------------------------- ###
+def rep_lwscore(word):
+    dicword,num = word_repletters(word)
+    repletters = 0
+    if(num == 0):
+        return(word)
+    else:
+        return(dicword)
+    
+### Checking Word Score in SentiWordnet ###
+### ----------------------------------- ###
+def check_swn(word,neg,intensif):
+    swnscore = 99
+    word = singular_form(word)
+    sentw_query = "select ps,ns from sentiwnet_score_avg where "
+    sentw_query = sentw_query + "synsetterms ="+" '%s' "+" or synsetterms ="+" '%s' " 
+    n_word = word      ## normal word (word in its original case form)
+    word = word.lower()
+    stem_word = word_stem(word)
+    if(word in pos_emot):     ## Checking for emoticons
+        swnscore = 1
+    elif(word in neg_emot):
+        swnscore = -1
+    else:
+        query = sentw_query % (word,stem_word)
+        cursor.execute(query)
+        scores = cursor.fetchall()
+        if(scores):
+            for score in scores:
+                swnscore  = float((score.ps - score.ns)* neg) + float(intensif)
+        else:
+            pscore,nscore = check_synonym(word,1)                   ## checking word synonyms
+            if(pscore <> 99 and nscore <> 99):
+                swnscore  = float((pscore - nscore) * neg) + float(intensif)
+        
+    return(swnscore)
+
+### Tweet scoring functions ###
+### ----------------------- ###
+def tweet_score_neg(word,twt_tok,intsif_wt):
+    if(word in pos_emot):
+        return(0)
+    elif(word in neg_emot):
+        return(-2)
+    word_score = 99
+    n_word = word ## normal word (word in its original case form)
+    word = word.lower()
+    ps,ns = check_synonym(word,0)                   ## checking word synonyms
+    pa,na = check_antonym(word)                   ## checking word antonyms
+    sform = singular_form(word)                   ## Converting into singular
+    ptest = sform in hu_pos_words or sform in d_pos_words  ## checking singular form of the word
+    ntest = sform in hu_neg_words or sform in d_neg_words
+    
+    if(word in hu_pos_words or word in d_pos_words or ps or pa or ptest):
+        word_score = -1-intsif_wt
+    elif (word in hu_neg_words or word in d_neg_words or ns or na or ntest):
+        word_score = 1+intsif_wt
+    elif(word in Negations):
+        word_score = -1
+    if(word_score == 99):
+        word_score = check_swn(word,-1,intsif_wt)         # -1 for negation
+    if(ucword(n_word) and word_score <> 99):
+        now = len(twt_tok)- emot_count(twt_tok)
+        cap_frac = ucword_count(twt_tok) / now
+        if(word_score > 0):
+            word_score = word_score + cap_frac
+        elif(word_score < 0):
+            word_score = word_score - cap_frac
+    return(word_score)
+### ----------------------- ###
+def tweet_score(word,twt_tok,intsif_wt):
+    word_score = 99
+    n_word = word      ## normal word (word in its original case form)
+    word = word.lower()
+    ps,ns = check_synonym(word,0)                   ## checking word synonyms
+    pa,na = check_antonym(word)                   ## checking word antonyms
+    sform = singular_form(word)                   ## Converting into singular
+    
+    ptest = sform in hu_pos_words or sform in d_pos_words  ## checking singular form of the word
+    ntest = sform in hu_neg_words or sform in d_neg_words
+    if(word in hu_pos_words or word in d_pos_words or ps or pa or ptest):
+        word_score = 1 + intsif_wt
+    elif (word in hu_neg_words or word in d_neg_words or ns or na or ntest):
+        word_score = -1 -  intsif_wt
+    elif(word in Negations):
+        word_score = -1
+    if(word_score == 99 and word in slangs_dic):
+        word_score = slang_score(word)
+    elif(word_score==99):
+        word_score = check_swn(word,1,intsif_wt)      ## 1 for not-neg, intsif_wt = intensifier's wt
+    if(ucword(n_word) and word_score <> 99):
+        now = len(twt_tok)- emot_count(twt_tok)
+        cap_frac = ucword_count(twt_tok) / now
+        if(word_score > 0):
+            word_score = word_score + cap_frac
+        elif(word_score < 0):
+            word_score = word_score - cap_frac
+    return(word_score)
+
+### Performance Measures ###
+### -------------------- ###
+def performance(tscores,pol_dict):
+    Negative_Count = 0
+    Positive_Count = 0
+    Neutral_Count = 0
+    TP = TN = TNU = 0
+    Fpn = 0
+    Fnp = 0
+    Ftn = 0
+    Ftp = 0
+    Fpt = 0
+    Fnt = 0
+    length = len(tscores)
+    detect = {}
+    cfmatrix1 = {}
+    cfmatrix2 = {}
+    for id in range(1,length+1):
+        if( tscores[id] > 0 ):
+            Positive_Count = Positive_Count + 1
+        elif(tscores[id] < 0):
+            Negative_Count = Negative_Count + 1         ## counting +ve/-ve tweets
+        elif(tscores[id] == 0):
+            Neutral_Count = Neutral_Count + 1
+            
+        ## Calculation true/false positive/negative ###
+            
+        if( pol_dict[id] == 'pos' and tscores[id] > 0 ):
+            TP = TP + 1
+        elif( pol_dict[id] == 'neg' and tscores[id] < 0):
+            TN = TN + 1
+        elif( pol_dict[id] == 'neut' and tscores[id] == 0 ):
+            TNU = TNU + 1
+
+        if( pol_dict[id] == 'pos' and tscores[id] < 0  ):
+            Fpn = Fpn + 1
+        elif( pol_dict[id] == 'neg' and tscores[id] > 0 ):
+            Fnp = Fnp + 1
+        elif( pol_dict[id] == 'neut' and tscores[id] < 0 ):
+            Ftn = Ftn + 1
+        elif( pol_dict[id] == 'neut' and tscores[id] > 0 ):
+            Ftp = Ftp + 1
+        elif( pol_dict[id] == 'pos' and tscores[id] == 0 ):
+            Fpt = Fpt + 1
+        elif( pol_dict[id] == 'neg' and tscores[id] == 0 ):
+            Fnt = Fnt + 1
+            
+            
+
+    accuracy = (TP+TN+TNU) / len(pol_dict)
+    cfmatrix1['TP']  = TP
+    cfmatrix1['TN']  = TN
+    cfmatrix1['TNU'] = TNU
+    cfmatrix1['Accuracy'] = accuracy
+    cfmatrix2['Fpn'] = Fpn
+    cfmatrix2['Fnp'] = Fnp
+    cfmatrix2['Ftn'] = Ftn
+    cfmatrix2['Ftp'] = Ftp
+    cfmatrix2['Fpt'] = Fpt
+    cfmatrix2['Fnt'] = Fnt
+    
+    detect['pos']  = Positive_Count
+    detect['neg']  = Negative_Count
+    detect['neut'] = Neutral_Count
+    
+    return(detect,cfmatrix1,cfmatrix2)
+#####################################
+scores = {}      ## Dictionary to store scores
+tweet_score_fd = open("e:\\FMData\\Research-Paper-Twitter\\tweet_new_score.txt","a")
+for row in range(1,num_rows):
+    tid   = wsheet.cell_value(row,1)
+    tweet = wsheet.cell_value(row,2)
+    tweet = tweet.encode('ascii','ignore')
+    tweet_tokens = tweet.split()
+    twlength = len(tweet_tokens)
+    tokcount = 0
+    score_list = []
+    NEG = 0
+    INTSF_COUNT = 0
+    intensif = 0
+    for num in range(0,twlength):
+        w1 = tweet_tokens[tokcount]
+        w1 = w1.strip()
+        w1 = rempunct(w1)
+        exc = exclam(w1)
+        if(exc>0):
+            w1 = w1[:-exc]        
+        repl1 = rep_letters(w1)
+        w1 = rep_lwscore(w1)
+        repl2 = rep_letters(w1)
+        repl = repl1 - repl2
+        #w1 = word_stem(w1)
+        if(w1.lower() in Negations):
+            NEG = NEG + 1
+            if(tokcount < twlength-1):
+                tokcount = tokcount + 1
+                w2 = tweet_tokens[tokcount]
+                w2 = w2.strip()
+                w2 = rempunct(w2)
+                exc = exclam(w2)
+                if(exc>0):
+                    w2 = w2[:-exc]
+                w2 = rep_lwscore(w2)
+                s = tweet_score_neg(w2,tweet_tokens,intensif)
+            else:
+                s = tweet_score_neg(w1,tweet_tokens,intensif)
+        elif(w1 in modifiers or w1 in contcshifter):
+            INTSF_COUNT = INTSF_COUNT + 1
+            if(w1 in modifiers):
+                intensif = 0.81                  # average of normalized values
+            elif(w1 in contcshifter):
+                intensif = 0.80                  # average of normalized values
+            if(tokcount < twlength-1):
+                tokcount = tokcount + 1
+                w2 = tweet_tokens[tokcount]
+                w2 = w2.strip()
+                w2 = rempunct(w2)
+                exc = exclam(w2)
+                if(exc>0):
+                    w2 = w2[:-exc]
+                w2 = rep_lwscore(w2)
+                s = tweet_score(w2,tweet_tokens,intensif)
+            else:
+                w1 = rep_lwscore(w1)
+                s = tweet_score(w1,tweet_tokens,intensif)
+        else:
+            s = tweet_score(w1,tweet_tokens,intensif)
+        if(tokcount < twlength-1):
+            tokcount = tokcount + 1
+
+        score_list.append(s)
+        intensif = 0
+    tot_dup_score = NEG + INTSF_COUNT       ## removing of duplicate score (cause of negs and intensifiers)
+    if(tot_dup_score > 0 and len(score_list)>=2):
+        for ng in range(0,tot_dup_score):
+            score_list.pop()
+    NEG = 0
+    INTSF_COUNT = 0
+    final_score = 0
+    for sc in score_list:
+        if(sc <> 99):
+            final_score = final_score + float(sc)
+    final_score = ( (1 + exclam(tweet))/2)*(final_score + repl)
+    scores[int(tid)] = round(final_score,6)
+    print tid,round(final_score,6)
+    #tweet_score_fd.write(str(tid)+" "+str(final_score)+"\n")
+        
+    #print "Exclam:",exclam(tweet)
+    #print "Repeat Letters:",repl
+
+detect,cfm1,cfm2 = performance(scores,pol_dict)
+print detect
+print cfm1
+print cfm2
+#tweet_score_fd.close()
+print "Completed..."
